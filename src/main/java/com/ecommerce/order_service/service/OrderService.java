@@ -3,10 +3,9 @@ package com.ecommerce.order_service.service;
 import com.ecommerce.order_service.dto.OrderRequest;
 import com.ecommerce.order_service.dto.OrderResponse;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 
 public interface OrderService {
-    CompletableFuture<OrderResponse> placeOrder(OrderRequest orderRequest, String userId); // Create
+    OrderResponse placeOrder(OrderRequest orderRequest, String userId); // Create
     //List<OrderResponse> getAllOrders();                  // Read All
     List<OrderResponse> getOrders(String userId, boolean isAdmin);                  // Read All x userId
     OrderResponse getOrderById(Long id);                 // Read One

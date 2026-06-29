@@ -10,7 +10,6 @@ import com.ecommerce.order_service.service.OrderService;
 import com.ecommerce.order_service.service.client.InventoryClient;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
-import io.github.resilience4j.timelimiter.annotation.TimeLimiter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,7 +19,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
 @Service
 @Slf4j
@@ -35,64 +33,46 @@ public class OrderServiceImpl implements OrderService {
     @Value("${order.enabled:true}")
     private boolean ordersEnabled;
 
-    public CompletableFuture<OrderResponse> fallbackMethod(OrderRequest orderRequest, String userId, Throwable throwable){
-        return CompletableFuture.supplyAsync( () -> {
-            log.error("Error al procesar la orden: {}", throwable.getMessage());
-            throw new RuntimeException("Error al procesar la orden. Por favor, inténtelo de nuevo más tarde.");
-        });
+    public OrderResponse fallbackMethod(OrderRequest orderRequest, String userId, Throwable throwable){
+        log.error("Error al procesar la orden: {}", throwable.getMessage());
+        throw new RuntimeException("Error al procesar la orden. Por favor, inténtelo de nuevo más tarde.");
     }
 
     @Override
     @Transactional
     @CircuitBreaker(name = "inventory", fallbackMethod = "fallbackMethod")
     @Retry(name = "inventory")
-    @TimeLimiter(name = "inventory")
-    public CompletableFuture<OrderResponse> placeOrder(OrderRequest orderRequest, String userId) {
+    public OrderResponse placeOrder(OrderRequest orderRequest, String userId) {
+        if(!ordersEnabled){
+            log.warn("Pedido rechazado: Servicio deshabilitado por configuración.");
+            throw new RuntimeException("El servicio de pedidos está actualmente en mantenimiento. Intente más tarde");
+        }
 
-        long startTime = System.currentTimeMillis();
+        log.info("Colocando nuevo pedido");
 
-        return CompletableFuture.supplyAsync( () -> {
-            if(!ordersEnabled){
-                log.warn("Pedido rechazado: Servicio deshabilitado por configuración.");
-                throw new RuntimeException("El servicio de pedidos está actualmente en mantenimiento. Intente más tarde");
+        Order order = orderMapper.toOrder(orderRequest);
+        order.setUserId(userId);
+
+        for(var item : order.getOrderLineItemsList()){
+            String sku = item.getSku();
+            Integer quantity = item.getQuantity();
+
+            try {
+                inventoryClient.reduceStock(sku, quantity);
+
+            } catch (Exception e) {
+                log.error("Error al reducir stock para el producto {}: {}", sku, e.getMessage());
+                throw new IllegalArgumentException("No se pudo procesar la orden: Stock insuficiente o " +
+                        "error de inventario");
             }
+        }
 
-            log.info("Colocando nuevo pedido");
+        order.setOrderNumber(UUID.randomUUID().toString());
+        Order savedOrder = orderRepository.save(order);
 
-            Order order = orderMapper.toOrder(orderRequest);
-            order.setUserId(userId);
+        log.info("Orden guardada con éxito. ID: {}", savedOrder.getId());
 
-            for(var item : order.getOrderLineItemsList()){
-                String sku = item.getSku();
-                Integer quantity = item.getQuantity();
-
-                try {
-                    inventoryClient.reduceStock(sku, quantity);
-
-                } catch (Exception e) {
-                    log.error("Error al reducir stock para el producto {}: {}", sku, e.getMessage());
-                    throw new IllegalArgumentException("No se pudo procesar la orden: Stock insuficiente o " +
-                            "error de inventario");
-                }
-            }
-
-            order.setOrderNumber(UUID.randomUUID().toString());
-
-            long totalTime = System.currentTimeMillis() - startTime;
-
-            if(totalTime > 3000) {
-                log.warn("Tiempo de procesamiento de la orden: {} ms. Esto puede indicar un problema de rendimiento.", totalTime);
-                throw new RuntimeException("Tiempo de procesamiento excedido. Por favor, inténtelo de nuevo más tarde.");
-            }
-
-            log.info("Tiempo total para procesar la orden: {} ms", totalTime);
-
-            Order savedOrder = orderRepository.save(order);
-
-            log.info("Orden guardada con éxito. ID: {}", savedOrder.getId());
-
-            return orderMapper.toOrderResponse(savedOrder);
-        });
+        return orderMapper.toOrderResponse(savedOrder);
     }
 
     @Override
