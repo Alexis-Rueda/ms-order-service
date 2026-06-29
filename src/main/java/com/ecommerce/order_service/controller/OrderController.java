@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 @RestController
 @RequestMapping("/api/v1/order")
@@ -21,8 +22,8 @@ public class OrderController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public OrderResponse placeOrder(@Valid @RequestBody OrderRequest orderRequest,
-                                    @AuthenticationPrincipal Jwt jwt
+    public CompletableFuture<OrderResponse> placeOrder(@Valid @RequestBody OrderRequest orderRequest,
+                                                       @AuthenticationPrincipal Jwt jwt
     ){
         return orderService.placeOrder(orderRequest, jwt.getSubject());
     }
