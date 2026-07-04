@@ -9,11 +9,10 @@ import com.ecommerce.order_service.model.Order;
 import com.ecommerce.order_service.model.OrderStatus;
 import com.ecommerce.order_service.repository.OrderRepository;
 import com.ecommerce.order_service.service.OrderService;
-//import com.ecommerce.order_service.service.client.InventoryClient;
-//import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
-//import io.github.resilience4j.retry.annotation.Retry;
+import com.ecommerce.order_service.service.OutboxService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
@@ -30,9 +29,8 @@ import java.util.UUID;
 public class OrderServiceImpl implements OrderService {
     private final OrderRepository orderRepository;
     private final OrderMapper orderMapper;
-    //    private final WebClient.Builder webClientBuilder;
-//    private final InventoryClient inventoryClient;
     private final RabbitTemplate rabbitTemplate;
+    private final OutboxService outboxService;
 
     @Value("${order.enabled:true}")
     private boolean ordersEnabled;
@@ -44,8 +42,6 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     @Transactional
-//    @CircuitBreaker(name = "inventory", fallbackMethod = "fallbackMethod")
-//    @Retry(name = "inventory")
     public OrderResponse placeOrder(OrderRequest orderRequest, String userId) {
 
         if(!ordersEnabled){
@@ -57,21 +53,6 @@ public class OrderServiceImpl implements OrderService {
 
         Order order = orderMapper.toOrder(orderRequest);
         order.setUserId(userId);
-
-//            for(var item : order.getOrderLineItemsList()){
-//                String sku = item.getSku();
-//                Integer quantity = item.getQuantity();
-//
-//                try {
-//                    inventoryClient.reduceStock(sku, quantity);
-//
-//                } catch (Exception e) {
-//                    log.error("Error al reducir stock para el producto {}: {}", sku, e.getMessage());
-//                    throw new IllegalArgumentException("No se pudo procesar la orden: Stock insuficiente o " +
-//                            "error de inventario");
-//                }
-//            }
-
         order.setOrderNumber(UUID.randomUUID().toString());
         order.setStatus(OrderStatus.PLACED);
         Order savedOrder = orderRepository.save(order);
@@ -86,7 +67,16 @@ public class OrderServiceImpl implements OrderService {
                 savedOrder.getOrderNumber(), orderRequest.getEmail(), orderItems
         );
 
-        rabbitTemplate.convertAndSend("order-events", "order.placed", event);
+        boolean sentToRabbit = false;
+        try {
+            rabbitTemplate.convertAndSend("order-events", "order.placed", event);
+            sentToRabbit = true;
+            log.info("🚀 Mensaje enviado inmediatamente a RabbitMQ: {}", savedOrder.getOrderNumber());
+        } catch (AmqpException e) {
+            log.error("⚠️ RabbitMQ caído. El Outbox asegurará el envío posterior para la orden: {}", savedOrder.getOrderNumber());
+        }
+
+        outboxService.saveOrderPlacedEvent(event, sentToRabbit);
 
         log.info("Evento enviado a RabbitMQ para la orden: {}", savedOrder.getOrderNumber());
 
@@ -108,14 +98,6 @@ public class OrderServiceImpl implements OrderService {
                 .map(orderMapper::toOrderResponse)
                 .toList();
     }
-
-//    @Override
-//    @Transactional(readOnly = true)
-//    public List<OrderResponse> getAllOrders() {
-//        return orderRepository.findAll().stream()
-//                .map(orderMapper::toOrderResponse)
-//                .toList();
-//    }
 
     @Override
     @Transactional(readOnly = true)
